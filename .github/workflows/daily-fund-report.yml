@@ -3,7 +3,7 @@ name: 基金晨间投资报告
 on:
   schedule:
     # 每周一到周五早晨8:30运行（UTC时间0:30，北京时间8:30）
-    - cron: '30 0 * * 1-5'
+    - cron: '0 2 * * 1-5'
   workflow_dispatch:  # 允许手动触发
 
 jobs:
