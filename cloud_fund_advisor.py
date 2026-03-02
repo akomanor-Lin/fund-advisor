@@ -435,6 +435,19 @@ def send_serverchan(message):
 
 # ============== 主程序 ==============
 
+def send_error_notification(error_msg):
+    """发送错误通知"""
+    try:
+        url = f"https://sctapi.ftqq.com/{SERVERCHAN_SENDKEY}.send"
+        data = {
+            "title": f"⚠️ 基金报告推送失败 - {datetime.now().strftime('%m/%d %H:%M')}",
+            "desp": error_msg
+        }
+        requests.post(url, json=data, timeout=15)
+    except:
+        pass
+
+
 def main():
     print("=" * 50)
     print("🌅 基金晨间投资顾问启动")
@@ -443,46 +456,81 @@ def main():
     print("=" * 50)
     print()
 
-    # 1. 扫描所有ETF
-    all_data = scan_all_etfs()
+    try:
+        # 1. 扫描所有ETF
+        all_data = scan_all_etfs()
 
-    if not all_data or len(all_data) < 5:
-        print("❌ 获取数据不足，无法生成报告")
-        return
+        if not all_data or len(all_data) < 5:
+            error_msg = f"""获取数据不足，无法生成报告
 
-    # 2. 评分筛选
-    print("📊 正在分析评分...")
-    top_funds, all_top_funds = screen_and_rank(all_data)
+可能原因：
+• 当前时间：{datetime.now().strftime('%H:%M')}
+• 市场状态：未开盘或非交易时间
+• API问题：数据源可能暂时不可用
 
-    if not top_funds:
-        print("⚠️ 没有符合条件的推荐")
-        return
+建议：
+• 请在交易时间（9:30-15:00）手动触发测试
+• 或将定时任务调整为9:30之后执行
 
-    print(f"✅ 筛选出 {len(top_funds)} 只推荐ETF\n")
+获取数据量：{len(all_data) if all_data else 0} / 32
+"""
+            print("❌ 获取数据不足，无法生成报告")
+            send_error_notification(error_msg)
+            return
 
-    # 3. 生成报告
-    report = generate_morning_report(top_funds, all_top_funds)
+        # 2. 评分筛选
+        print("📊 正在分析评分...")
+        top_funds, all_top_funds = screen_and_rank(all_data)
 
-    if not report:
-        print("❌ 生成报告失败")
-        return
+        if not top_funds:
+            error_msg = f"""没有符合条件的推荐
 
-    print("📊 报告预览:")
-    print("=" * 50)
-    print(report[:500] + "...")
-    print("=" * 50)
-    print()
+分析完成，但没有筛选出符合条件的ETF
+• 当前时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}
+• 分析基金数：{len(all_data)}
+• 评分标准：最低{MIN_SCORE}分
 
-    # 4. 发送消息
-    print("📤 正在发送到微信...")
-    success = send_serverchan(report)
+这可能是市场整体行情导致的正常现象
+"""
+            print("⚠️ 没有符合条件的推荐")
+            send_error_notification(error_msg)
+            return
 
-    if success:
-        print("\n✅ 晨间报告发送完成！")
-    else:
-        print("\n❌ 发送失败")
+        print(f"✅ 筛选出 {len(top_funds)} 只推荐ETF\n")
 
-    print("=" * 50)
+        # 3. 生成报告
+        report = generate_morning_report(top_funds, all_top_funds)
+
+        if not report:
+            print("❌ 生成报告失败")
+            return
+
+        print("📊 报告预览:")
+        print("=" * 50)
+        print(report[:500] + "...")
+        print("=" * 50)
+        print()
+
+        # 4. 发送消息
+        print("📤 正在发送到微信...")
+        success = send_serverchan(report)
+
+        if success:
+            print("\n✅ 晨间报告发送完成！")
+        else:
+            print("\n❌ 发送失败")
+
+        print("=" * 50)
+
+    except Exception as e:
+        error_msg = f"""程序运行异常
+
+错误信息：{str(e)}
+
+请检查代码或联系管理员
+"""
+        print(f"❌ 运行异常: {e}")
+        send_error_notification(error_msg)
 
 
 if __name__ == "__main__":
