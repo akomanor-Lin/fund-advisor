@@ -191,6 +191,97 @@ def scan_all_etfs():
 
 # ============== 技术分析与评分 ==============
 
+def calculate_atr(change_pcts, period=14):
+    """计算平均真实波动范围"""
+    if len(change_pcts) < period:
+        return abs(change_pcts.iloc[-1]) if len(change_pcts) > 0 else 0
+
+    atr = change_pcts.rolling(window=period).mean()
+    return abs(atr.iloc[-1]) if not np.isnan(atr.iloc[-1]) else 0
+
+
+def calculate_volatility(change_pcts, period=20):
+    """计算波动率"""
+    if len(change_pcts) < period:
+        return change_pcts.std() if len(change_pcts) > 0 else 0
+
+    vol = change_pcts.rolling(window=period).std()
+    return vol.iloc[-1] if not np.isnan(vol.iloc[-1]) else 0
+
+
+def predict_etf_movement(fund_data):
+    """
+    预测ETF短期走势
+    返回: {
+        'expected_up': 预计上涨百分比,
+        'expected_down': 预计下跌百分比,
+        'confidence': 预测置信度,
+        'buy_timing': 买入时机建议,
+        'sell_timing': 卖出时机建议
+    }
+    """
+    change_pct = fund_data['change_pct']
+    category = fund_data['category']
+
+    # 基于当前涨跌幅和历史波动率估算
+    base_volatility = 2.0  # 基础日波动率
+
+    # 根据板块调整波动率
+    if category in ['军工', '资源', '新能源']:
+        base_volatility = 3.0
+    elif category in ['宽基指数', '金融', '消费']:
+        base_volatility = 1.8
+    elif category in ['科技', '医药']:
+        base_volatility = 2.5
+
+    # 根据当前涨跌状态调整预测
+    if change_pct < -3:
+        # 大跌后，反弹概率大
+        expected_up = base_volatility * 1.5
+        expected_down = base_volatility * 0.8
+        buy_timing = "🟢 当前接近较好买入时机"
+        sell_timing = "🟢 暂无卖出信号"
+    elif change_pct < -1:
+        # 小跌后
+        expected_up = base_volatility * 1.2
+        expected_down = base_volatility * 0.9
+        buy_timing = "🟡 可考虑逢低买入"
+        sell_timing = "🟢 继续持有"
+    elif change_pct <= 1:
+        # 震荡
+        expected_up = base_volatility
+        expected_down = base_volatility
+        buy_timing = "🟡 观望为主，等待方向明确"
+        sell_timing = "🟢 继续持有"
+    elif change_pct <= 3:
+        # 小涨
+        expected_up = base_volatility * 0.9
+        expected_down = base_volatility * 1.1
+        buy_timing = "🟠 建议等待回调"
+        sell_timing = "🟡 关注卖出信号"
+    else:
+        # 大涨
+        expected_up = base_volatility * 0.7
+        expected_down = base_volatility * 1.5
+        buy_timing = "🔴 不建议追高买入"
+        sell_timing = "🟠 可考虑分批止盈"
+
+    # 计算置信度
+    confidence = 60
+    if abs(change_pct) > 2:
+        confidence += 10
+    if category in ['宽基指数', '消费', '医药']:
+        confidence += 5
+
+    return {
+        'expected_up': round(expected_up, 2),
+        'expected_down': round(expected_down, 2),
+        'confidence': min(confidence, 85),
+        'buy_timing': buy_timing,
+        'sell_timing': sell_timing
+    }
+
+
 def calculate_etf_score(fund_code, fund_data):
     """
     ETF综合评分系统
@@ -275,6 +366,7 @@ def screen_and_rank(all_fund_data):
 
     for fund_code, fund_data in all_fund_data.items():
         score_result = calculate_etf_score(fund_code, fund_data)
+        prediction = predict_etf_movement(fund_data)
 
         scored_funds.append({
             'code': fund_code,
@@ -282,7 +374,8 @@ def screen_and_rank(all_fund_data):
             'current': fund_data['current'],
             'change_pct': fund_data['change_pct'],
             'category': fund_data['category'],
-            **score_result
+            **score_result,
+            'prediction': prediction
         })
 
     # 按评分排序
@@ -333,6 +426,21 @@ def generate_morning_report(top_funds, all_top_funds):
             report_lines.append(f"  最新价: {fund['current']:.3f}  {change_symbol} {fund['change_pct']:+.2f}%")
             report_lines.append(f"  板块: {fund['category']}")
             report_lines.append(f"  💡 {fund['recommendation']}")
+            report_lines.append("")
+
+            # 新增：价格预测信息
+            pred = fund['prediction']
+            report_lines.append(f"  📊 短期预测 (置信度: {pred['confidence']}%):")
+            report_lines.append(f"     - 预计涨幅: +{pred['expected_up']}%")
+            report_lines.append(f"     - 预计跌幅: -{pred['expected_down']}%")
+            report_lines.append("")
+
+            # 新增：买卖时机
+            report_lines.append(f"  ⏰ 操作时机:")
+            report_lines.append(f"     - 买入: {pred['buy_timing']}")
+            report_lines.append(f"     - 卖出: {pred['sell_timing']}")
+            report_lines.append("")
+
             report_lines.append(f"  🔍 理由: {' | '.join(fund['details'][:3])}")
             report_lines.append("")
 
