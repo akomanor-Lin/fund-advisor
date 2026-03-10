@@ -1,8 +1,9 @@
-name: 基金晨间投资报告
+name: 基金晨间投资报告 V2.0
 
 on:
   schedule:
     # 每周一到周五早晨8:30运行（UTC时间0:30，北京时间8:30）
+    # 市场开盘前，建议在开盘后手动触发一次获取实时数据
     - cron: '30 0 * * 1-5'
   workflow_dispatch:  # 允许手动触发
 
@@ -22,14 +23,14 @@ jobs:
     - name: 安装依赖
       run: |
         python -m pip install --upgrade pip
-        pip install pandas numpy requests akshare
+        pip install pandas numpy requests akshare tushare
 
-    - name: 运行基金晨间报告
+    - name: 运行基金晨间报告 V2.0
       env:
         SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
-        FUND_LIST: ${{ secrets.FUND_LIST }}
+        TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       run: |
-        python cloud_fund_advisor.py
+        python cloud_fund_advisor_v2.py
 
     - name: 等待5秒（确保消息发送）
       run: sleep 5
