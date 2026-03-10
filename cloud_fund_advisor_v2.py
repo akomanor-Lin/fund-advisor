@@ -640,7 +640,7 @@ def generate_morning_report_v2(top_funds, all_top_funds, position_analysis=None,
             recommend_short = fund['recommendation'].replace('🟢🟢🟢', '★★★').replace('🟢🟢', '★★').replace('🟢', '★').replace('🔴', '×')
 
             report_lines.append(
-                f"#{i:2d} {fund['name']:10s} {fund['score']:3d}分 "
+                f"#{i:2d} {fund['name']:10s} {int(fund['score']):3d}分 "
                 f"{change_symbol} {fund['change_pct']:+6.2f}% "
                 f"{recommend_short}"
             )
