@@ -1,5 +1,5 @@
 """
-云端基金晨间投资顾问 - 自动筛选版本
+云端基金晨间投资顾问 V2.0 - 基于2026-03-10科创50暴力反转经验优化
 每天从主流ETF池中自动筛选推荐
 运行在GitHub Actions上，每天早晨8:30自动推送
 """
@@ -18,9 +18,12 @@ import time
 # Server酱SendKey
 SERVERCHAN_SENDKEY = os.getenv('SERVERCHAN_SENDKEY', '')
 
-# 自动筛选配置
 # Tushare Token（V2.0新增）
 TUSHARE_TOKEN = os.getenv('TUSHARE_TOKEN', 'a30f4d314ad6f1e64729f7b3e2d38ba3a305af8277269846fa1b9435')
+
+# 自动筛选配置
+TOP_N = 10  # 推荐前N名
+MIN_SCORE = 50  # 最低评分要求
 
 # 用户持仓配置（V2.0新增）
 USER_POSITION = {
@@ -32,15 +35,6 @@ USER_POSITION = {
     'yesterday_nav': None,
     'yesterday_change_pct': None,
 }
-
-# 尝试导入tushare（在import部分）
-try:
-    import tushare as ts
-    TUSHARE_AVAILABLE = True
-except ImportError:
-    TUSHARE_AVAILABLE = False
-TOP_N = 10  # 推荐前N名
-MIN_SCORE = 50  # 最低评分要求
 
 
 # ============== 主流ETF基金池 ==============
@@ -97,74 +91,6 @@ ETF_POOL = {
     # 房地产
     "512200.SH": {"name": "房地产ETF", "category": "地产"},
 }
-class AnomalyDetector:
-    """异常波动检测器 - 基于2026-03-10暴力反转经验"""
-
-    @staticmethod
-    def detect_violent_reversal(yesterday_change, today_open_change):
-        """检测暴力反转"""
-        if yesterday_change is None or today_open_change is None:
-            return None
-
-        total_change = today_open_change - yesterday_change
-
-        # 条件1：昨日下跌且今日大涨
-        if yesterday_change < -1.5 and today_open_change > 1.5:
-            return {
-                'is_anomaly': True,
-                'type': '暴力反转',
-                'severity': '高',
-                'description': f'昨日{yesterday_change:+.2f}%, 今日高开{today_open_change:+.2f}%（总变化{total_change:+.2f}%）',
-                'implication': '可能是行情反转的信号，注意观察持续性',
-                'action': '不要急于止盈，观察上午走势，让利润奔跑',
-            }
-
-        # 条件2：两日总变化超过3.5%
-        elif total_change > 3.5:
-            return {
-                'is_anomaly': True,
-                'type': '剧烈波动',
-                'severity': '中',
-                'description': f'两日总变化{total_change:+.2f}%（昨日{yesterday_change:+.2f}% → 今日{today_open_change:+.2f}%）',
-                'implication': '市场波动加剧，情绪化交易增多',
-                'action': '保持冷静，严格执行止盈止损',
-            }
-
-        return None
-
-    @staticmethod
-    def detect_all(yesterday_change, today_open_change):
-        """检测所有异常，返回异常列表"""
-        anomalies = []
-
-        # 1. 暴力反转检测
-        reversal = AnomalyDetector.detect_violent_reversal(yesterday_change, today_open_change)
-        if reversal:
-            anomalies.append(reversal)
-
-        # 2. 暴涨检测
-        if today_open_change and today_open_change > 3.0:
-            anomalies.append({
-                'is_anomaly': True,
-                'type': '暴涨',
-                'severity': '中',
-                'description': f'单日涨幅{today_open_change:+.2f}%',
-                'implication': '短期涨幅过大，可能有回调风险',
-                'action': '设置动态止盈，保护利润',
-            })
-
-        # 3. 暴跌检测
-        if yesterday_change and yesterday_change < -3.0:
-            anomalies.append({
-                'is_anomaly': True,
-                'type': '暴跌',
-                'severity': '高',
-                'description': f'单日跌幅{yesterday_change:+.2f}%',
-                'implication': '市场恐慌情绪蔓延',
-                'action': '严格执行止损，不要抄底',
-            })
-
-        return anomalies
 
 
 # ============== 数据获取 ==============
@@ -274,106 +200,6 @@ def scan_all_etfs():
     print("=" * 50)
     print(f"✅ 成功获取 {success_count}/{len(ETF_POOL)} 只基金数据\n")
 
-    def get_tushare_index_data(index_code):
-    """使用Tushare获取指数数据（V2.0新增）"""
-    if not TUSHARE_AVAILABLE:
-        return None
-
-    try:
-        from datetime import timedelta
-        ts.set_token(TUSHARE_TOKEN)
-        pro = ts.pro_api()
-
-        end_date = datetime.now().strftime("%Y%m%d")
-        start_date = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
-
-        df = pro.index_daily(ts_code=index_code, start_date=start_date, end_date=end_date)
-
-        if df is not None and len(df) > 0:
-            df = df.sort_values('trade_date')
-            latest = df.iloc[-1]
-            prev = df.iloc[-2] if len(df) > 1 else latest
-
-            return {
-                'trade_date': latest['trade_date'],
-                'close': latest['close'],
-                'change_pct': ((latest['close'] - prev['close']) / prev['close']) * 100
-            }
-
-    except Exception as e:
-        print(f"Tushare获取失败: {e}")
-
-    return None
-
-def analyze_user_position(yesterday_nav, yesterday_change_pct, today_open_change=None):
-    """分析用户持仓情况（V2.0新增）"""
-    principal = USER_POSITION['principal']
-    cost_nav = USER_POSITION['cost_nav']
-
-    # 计算昨日市值和盈亏
-    yesterday_value = principal * yesterday_nav / cost_nav
-    yesterday_profit = yesterday_value - principal
-    yesterday_profit_pct = (yesterday_profit / principal) * 100
-
-    # 计算今日预估
-    if today_open_change:
-        today_nav = yesterday_nav * (1 + today_open_change / 100)
-        today_value = principal * today_nav / cost_nav
-        today_profit = today_value - principal
-        today_profit_pct = (today_profit / principal) * 100
-    else:
-        today_nav = yesterday_nav
-        today_value = yesterday_value
-        today_profit = yesterday_profit
-        today_profit_pct = yesterday_profit_pct
-
-    # 止损位
-    stop_loss_nav = cost_nav * 0.97
-    stop_loss_value = principal * 0.97
-    distance_to_stop = ((today_nav - stop_loss_nav) / stop_loss_nav) * 100
-
-    # 风险等级
-    if distance_to_stop < 2:
-        risk_level = '高'
-        risk_icon = '🔴'
-    elif distance_to_stop < 5:
-        risk_level = '中'
-        risk_icon = '🟡'
-    else:
-        risk_level = '低'
-        risk_icon = '🟢'
-
-    # 操作建议
-    if today_profit_pct > 10:
-        action = "建议分批止盈"
-        detail = "盈利+20%: 止盈30%; 盈利+30%: 止盈40%; 盈利+50%: 全部止盈"
-    elif today_profit_pct > 0:
-        action = "建议继续持有"
-        detail = f"设置止盈位: +10%（{principal * 1.1:.0f}元）；止损: 成本价"
-    elif today_profit_pct > -3:
-        action = "建议谨慎持有"
-        detail = f"严格执行止损: -3%（{stop_loss_value:.0f}元）；不要加仓"
-    else:
-        action = "建议止损"
-        detail = "已触发止损条件，建议立即止损"
-
-    return {
-        'yesterday_nav': yesterday_nav,
-        'yesterday_value': yesterday_value,
-        'yesterday_profit': yesterday_profit,
-        'yesterday_profit_pct': yesterday_profit_pct,
-        'today_nav': today_nav,
-        'today_value': today_value,
-        'today_profit': today_profit,
-        'today_profit_pct': today_profit_pct,
-        'stop_loss_nav': stop_loss_nav,
-        'stop_loss_value': stop_loss_value,
-        'distance_to_stop': distance_to_stop,
-        'risk_level': risk_level,
-        'risk_icon': risk_icon,
-        'action': action,
-        'detail': detail
-    }
     return all_data if all_data else None
 
 
@@ -470,121 +296,79 @@ def predict_etf_movement(fund_data):
     }
 
 
-def calculate_v4_score(fund_code, fund_data):
+def calculate_etf_score(fund_code, fund_data):
     """
-    V4算法评分 - 价格趋势优先
-    权重：价格趋势50% + 反弹幅度20% + 板块属性15% + 波动性15%
+    ETF综合评分系统
+    返回: {score, details, recommendation}
     """
     score = 50  # 基础分
     details = []
 
+    # 1. 涨跌幅评分 (-15 ~ +15)
     change_pct = fund_data['change_pct']
-    category = fund_data['category']
-
-    # 1. 价格趋势评分（50%权重）- 最重要
-    if change_pct > 2:
-        trend_score = 100
-        details.append("强势上涨")
-    elif change_pct > 0.5:
-        trend_score = 85
-        details.append("上涨趋势")
-    elif change_pct > -0.5:
-        trend_score = 60
-        details.append("震荡企稳")
-    elif change_pct > -2:
-        trend_score = 40
-        details.append("弱势震荡")
-    elif change_pct > -5:
-        trend_score = 20
-        details.append("下跌趋势")
-    else:
-        trend_score = 10
-        details.append("深度下跌")
-
-    # 价格趋势权重50%
-    score += (trend_score - 50) * 0.5
-
-    # 2. 反弹幅度评分（20%权重）- 避免追高
     if -2 <= change_pct <= 0.5:
-        score += 50 * 0.2  # 最佳买点加分
-        details.append("极佳买点")
+        score += 15
+        details.append("微跌企稳")
     elif -5 <= change_pct < -2:
-        score += 35 * 0.2
-        details.append("较好买点")
+        score += 10
+        details.append("小幅回调")
     elif 0.5 < change_pct <= 2:
-        score += 20 * 0.2
-        details.append("可接受")
-    elif 2 < change_pct <= 5:
-        score -= 10 * 0.2
-        details.append("追高风险中等")
-    else:
-        score -= 20 * 0.2
-        details.append("追高风险高")
+        score += 5
+        details.append("小幅上涨")
+    elif change_pct > 5:
+        score -= 10
+        details.append("涨幅过大")
+    elif change_pct < -5:
+        score -= 5
+        details.append("跌幅较大")
 
-    # 3. 板块属性评分（15%权重）
-    stable_categories = ['宽基指数', '金融', '消费', '策略']
-    growth_categories = ['科技', '医药', '新能源']
-
-    if category in stable_categories:
-        sector_score = 80
+    # 2. 类别权重调整
+    category = fund_data['category']
+    if category in ['宽基指数', '医药', '消费', '策略', '金融']:
+        score += 5
         details.append("稳健板块")
-    elif category in growth_categories:
-        sector_score = 70
-        details.append("成长板块")
-    else:
-        sector_score = 60
-        details.append("周期板块")
+    elif category in ['军工', '资源', '新能源']:
+        score -= 5
+        details.append("高波动板块")
 
-    # 板块权重15%
-    score += (sector_score - 50) * 0.15
+    # 3. 价格位置评分 (基于涨跌幅估算)
+    if -3 <= change_pct <= 0:
+        score += 10
+        details.append("相对低位")
 
-    # 4. 波动性评分（15%权重）
-    if abs(change_pct) < 1:
-        score += 40 * 0.15
-        details.append("低波动")
-    elif abs(change_pct) < 3:
-        score += 20 * 0.15
-        details.append("中等波动")
-    else:
-        score -= 10 * 0.15
+    # 4. 趋势评分
+    if change_pct > 0:
+        score += 5
+        details.append("上涨趋势")
+    elif change_pct < -1:
+        score -= 5
+        details.append("下跌趋势")
+
+    # 5. 波动率惩罚
+    if abs(change_pct) > 4:
+        score -= 5
         details.append("高波动")
 
     # 生成建议
-    if score >= 75:
-        recommendation = "🟢🟢🟢 强烈推荐"
+    if score >= 70:
+        recommendation = "⭐⭐⭐ 强烈推荐"
         risk = "低风险"
-        action = "可以分批建仓"
-    elif score >= 65:
-        recommendation = "🟢🟢 推荐"
+    elif score >= 60:
+        recommendation = "⭐⭐ 推荐"
         risk = "中等风险"
-        action = "可以考虑建仓"
-    elif score >= 55:
-        recommendation = "🟢 可以考虑"
+    elif score >= 50:
+        recommendation = "⭐ 观望"
         risk = "中等风险"
-        action = "小仓位试探"
-    elif score >= 45:
-        recommendation = "🟡 观望"
-        risk = "中等风险"
-        action = "等待更好时机"
     else:
-        recommendation = "🔴 不推荐"
+        recommendation = "❌ 回避"
         risk = "较高风险"
-        action = "暂时回避"
-
-    # 特殊判断：深度下跌不推荐
-    if change_pct < -3:
-        recommendation = "🔴 不推荐"
-        action = "等待企稳信号"
-        details.append("下跌趋势，等待反转")
 
     return {
-        'score': min(100, max(0, round(score, 2))),
+        'score': min(100, max(0, score)),
         'details': details,
         'recommendation': recommendation,
-        'risk': risk,
-        'action': action
+        'risk': risk
     }
-
 
 
 def screen_and_rank(all_fund_data):
@@ -787,30 +571,6 @@ def send_error_notification(error_msg):
 
 
 def main():
-    """
-    print("=" * 50)
-    print("🌅 基金晨间投资顾问 V2.0 启动")
-    print(f"🔥 V4算法: 价格趋势优先（50%权重）")
-    print(f"🚨 异常检测: 暴力反转、暴涨、暴跌")
-    print("=" * 50)
-    print()
-
-    # V2.0新增：异常波动检测
-    print("🚨 检测异常波动...")
-    # 这里需要实际的昨日和今日数据
-    # 示例：
-    yesterday_change = -1.61
-    today_open_change = 2.23
-    anomalies = AnomalyDetector.detect_all(yesterday_change, today_open_change)
-
-    if anomalies:
-        print(f"⚠️ 检测到 {len(anomalies)} 个异常波动")
-        for anomaly in anomalies:
-            print(f"   - {anomaly['type']}: {anomaly['description']}")
-    else:
-        print("✅ 未检测到异常波动")
-    print()
-"""
     print("=" * 50)
     print("🌅 基金晨间投资顾问启动")
     print(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
