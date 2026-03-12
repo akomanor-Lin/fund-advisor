@@ -1,11 +1,11 @@
  name: Multi-Position-Strategy-V3
 
-  on:
+ on:
     schedule:
       - cron: '30 0 * * 1-5'
     workflow_dispatch:
 
-  jobs:
+ jobs:
     report:
       runs-on: ubuntu-latest
 
@@ -23,3 +23,4 @@
         env:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
         run: python cloud_fund_advisor_v3_multi.py
+ 
