@@ -29,7 +29,7 @@ jobs:
         SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
         TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       run: |
-        python cloud_fund_advisor_v5.py
+        python cloud_fund_advisor_v5_multi.py
 
     - name: 等待5秒（确保消息发送）
       run: sleep 5
