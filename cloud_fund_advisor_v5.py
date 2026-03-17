@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-云端基金晨间投资顾问 V5.0 - 多持仓版本（V5算法）
-基于V5算法的多持仓策略 - 防高位回调版
+云端基金晨间投资顾问 V5.0 - 基金扫描版本
+基于V5算法的基金晨间扫描 - 防高位回调版
 
 核心改进：
 1. 新增距高点距离评分（20%权重）
@@ -9,8 +9,7 @@
 3. 新增高位回落状态识别
 4. 优化趋势权重（50%→30%）
 
-当前状态：已建仓3只基金（红利、银行、沪深300）
-建仓日期：2026-03-12
+功能：扫描30只主流ETF，推荐Top 10买入标的
 """
 
 import sys
@@ -39,77 +38,6 @@ TUSHARE_TOKEN = os.getenv('TUSHARE_TOKEN', 'a30f4d314ad6f1e64729f7b3e2d38ba3a305
 
 TOP_N = 10
 MIN_SCORE = 50
-
-# V5.0: 实际持仓配置（2026-03-12建仓）
-MULTI_POSITIONS = {
-    'positions': [
-        {
-            'fund_code': '510300.SH',
-            'fund_name': '沪深300ETF',
-            'etf_code': 'sh510300',
-            'category': '宽基指数',
-            'cost_nav': 4.689,           # 建仓价格
-            'shares': 50,                 # 建仓份额
-            'principal': 250,             # 投入本金
-            'status': 'held',             # 状态: held(持有)
-            'buy_date': '2026-03-12',     # 建仓日期
-            'v4_score_buy': 76,           # 建仓时V4评分
-            'v5_score_buy': 61.8,         # 建仓时V5评分（更新）
-            'stop_loss': 4.220,           # 止损价(-10%)
-            'take_profit': 5.392,         # 止盈价(+15%)
-            # V5新增：距高点数据
-            'week52_high': 4837,
-            'week52_low': 4480,
-            'month6_high': 4800,
-            'month6_low': 4550,
-        },
-        {
-            'fund_code': '512800.SH',
-            'fund_name': '银行ETF',
-            'etf_code': 'sh512800',
-            'category': '金融',
-            'cost_nav': 0.791,
-            'shares': 200,
-            'principal': 200,
-            'status': 'held',
-            'buy_date': '2026-03-12',
-            'v4_score_buy': 82,
-            'v5_score_buy': 73.0,         # 建仓时V5评分（更新）
-            'stop_loss': 0.712,
-            'take_profit': 0.910,
-            # V5新增：距高点数据
-            'week52_high': 6250,
-            'week52_low': 5450,
-            'month6_high': 6050,
-            'month6_low': 5580,
-        },
-        {
-            'fund_code': '510880.SH',
-            'fund_name': '红利ETF',
-            'etf_code': 'sh510880',
-            'category': '策略',
-            'cost_nav': 3.383,
-            'shares': 50,
-            'principal': 200,
-            'status': 'held',
-            'buy_date': '2026-03-12',
-            'v4_score_buy': 80,
-            'v5_score_buy': 65.5,         # 建仓时V5评分（更新）⚠️ 高位回落
-            'stop_loss': 3.045,
-            'take_profit': 3.890,
-            # V5新增：距高点数据
-            'week52_high': 2880,
-            'week52_low': 2520,
-            'month6_high': 2880,          # ⚠️ 6个月高点！
-            'month6_low': 2580,
-        },
-    ],
-    'total_principal': 1000,        # 总计划本金
-    'invested': 650,                # 已投入本金
-    'cash': 350,                    # 剩余现金
-    'build_strategy': 'batch',      # 分批建仓
-    'first_batch_date': '2026-03-12',
-}
 
 
 # ============== 主流ETF基金池 ==============
@@ -425,18 +353,21 @@ def get_fund_data_tencent(code):
 
 
 def scan_all_etds():
-    """扫描所有持仓ETF的实时数据"""
+    """扫描所有ETF基金池的实时数据"""
     results = []
 
-    print(f"📡 扫描持仓ETF（V5算法）...")
+    print(f"📡 扫描ETF基金池（V5算法）...")
     print("=" * 60)
 
-    for position in MULTI_POSITIONS['positions']:
-        etf_code = position['etf_code']
-        fund_code = position['fund_code']
-        fund_name = position['fund_name']
-        category = position['category']
-        status = position['status']
+    for fund_code, fund_info in ETF_POOL.items():
+        fund_name = fund_info['name']
+        category = fund_info['category']
+
+        # 确定ETF代码格式
+        if fund_code.endswith('.SH'):
+            etf_code = 'sh' + fund_code.split('.')[0]
+        else:
+            etf_code = 'sz' + fund_code.split('.')[0]
 
         try:
             # 尝试获取数据
@@ -446,7 +377,7 @@ def scan_all_etds():
                 data = get_fund_data_tencent(etf_code)
 
             if data:
-                # V5评分
+                # V5评分（简化版，不需要持仓信息）
                 fund_data = {
                     'name': fund_name,
                     'current': data['current'],
@@ -454,33 +385,12 @@ def scan_all_etds():
                     'category': category
                 }
 
-                score_result = calculate_v5_score(fund_code, fund_data, position)
-
-                # 计算持仓盈亏（如果已建仓）
-                profit_info = {}
-                if status == 'held':
-                    cost_nav = position['cost_nav']
-                    shares = position['shares']
-                    current_price = data['current']
-
-                    current_value = shares * current_price
-                    cost_value = shares * cost_nav
-                    profit = current_value - cost_value
-                    profit_pct = (profit / cost_value) * 100
-
-                    profit_info = {
-                        'cost_nav': cost_nav,
-                        'current_value': current_value,
-                        'cost_value': cost_value,
-                        'profit': profit,
-                        'profit_pct': profit_pct,
-                    }
+                score_result = calculate_v5_score(fund_code, fund_data, position_info=None)
 
                 results.append({
                     'fund_code': fund_code,
                     'fund_name': fund_name,
                     'category': category,
-                    'status': status,
                     'current_price': data['current'],
                     'change_pct': data['change_pct'],
                     'v5_score': score_result['score'],
@@ -488,18 +398,10 @@ def scan_all_etds():
                     'risk': score_result['risk'],
                     'action': score_result['action'],
                     'details': score_result['details'],
-                    'profit_info': profit_info,
                 })
 
-                status_icon = "✅" if status == 'held' else "⏳"
                 symbol = "📈" if data['change_pct'] > 0 else "📉" if data['change_pct'] < 0 else "➡️"
-
-                profit_str = ""
-                if profit_info:
-                    profit_symbol = "🟢" if profit_info['profit'] > 0 else "🔴" if profit_info['profit'] < 0 else "⚪"
-                    profit_str = f"  {profit_symbol} {profit_info['profit_pct']:+.2f}%"
-
-                print(f"{status_icon} {fund_name:12s} {symbol} {data['change_pct']:+6.2f}%  V5:{score_result['score']:.0f}  {score_result['recommendation']}{profit_str}")
+                print(f"  {fund_name:12s} {symbol} {data['change_pct']:+6.2f}%  V5:{score_result['score']:.0f}  {score_result['recommendation']}")
 
             time.sleep(0.15)
 
@@ -510,70 +412,49 @@ def scan_all_etds():
     return results
 
 
-# ============== 持仓分析 ==============
+# ============== 分析与排序 ==============
 
-def analyze_positions(scan_results):
-    """分析持仓情况"""
-    total_invested = MULTI_POSITIONS['invested']
-    total_current = 0
-    total_profit = 0
-    held_positions = []
+def analyze_and_sort(scan_results):
+    """分析并排序扫描结果"""
+    # 按V5评分排序
+    sorted_results = sorted(scan_results, key=lambda x: x['v5_score'], reverse=True)
 
-    print("\n📊 持仓分析（V5算法）")
+    # 筛选Top N
+    top_results = sorted_results[:TOP_N]
+
+    # 统计
+    total_count = len(scan_results)
+    strong_buy_count = len([r for r in scan_results if r['v5_score'] >= 75])
+    buy_count = len([r for r in scan_results if 65 <= r['v5_score'] < 75])
+    consider_count = len([r for r in scan_results if 55 <= r['v5_score'] < 65])
+
+    print(f"\n📊 扫描统计")
+    print("=" * 60)
+    print(f"总扫描: {total_count}只")
+    print(f"🟢🟢🟢 强烈推荐: {strong_buy_count}只")
+    print(f"🟢🟢 推荐: {buy_count}只")
+    print(f"🟢 可以考虑: {consider_count}只")
     print("=" * 60)
 
-    for result in scan_results:
-        if result['status'] == 'held' and result['profit_info']:
-            profit_info = result['profit_info']
-            total_current += profit_info['current_value']
-            total_profit += profit_info['profit']
-
-            held_positions.append({
-                'fund_name': result['fund_name'],
-                'current_value': profit_info['current_value'],
-                'profit': profit_info['profit'],
-                'profit_pct': profit_info['profit_pct'],
-                'v5_score': result['v5_score'],
-                'recommendation': result['recommendation'],
-            })
-
-            # 检查止损止盈
-            position = next(p for p in MULTI_POSITIONS['positions'] if p['fund_code'] == result['fund_code'])
-            stop_loss = position['stop_loss']
-            take_profit = position['take_profit']
-
-            signal = ""
-            if result['current_price'] <= stop_loss:
-                signal = f" ⚠️ 触及止损({stop_loss:.3f})"
-            elif result['current_price'] >= take_profit:
-                signal = f" 🎯 触及止盈({take_profit:.3f})"
-
-            print(f"\n【{result['fund_name']}】")
-            print(f"  成本: {profit_info['cost_nav']:.3f}  当前: {result['current_price']:.3f}")
-            print(f"  市值: {profit_info['current_value']:.2f}元  盈亏: {profit_info['profit']:+.2f}元 ({profit_info['profit_pct']:+.2f}%){signal}")
-            print(f"  V5评分: {result['v5_score']:.0f} - {result['recommendation']}")
-
-    total_profit_pct = (total_profit / total_invested) * 100 if total_invested > 0 else 0
-
-    print(f"\n💼 组合总计")
-    print(f"  投入成本: {total_invested:.2f}元")
-    print(f"  当前市值: {total_current:.2f}元")
-    print(f"  浮动盈亏: {total_profit:+.2f}元 ({total_profit_pct:+.2f}%)")
-
     return {
-        'total_invested': total_invested,
-        'total_current': total_current,
-        'total_profit': total_profit,
-        'total_profit_pct': total_profit_pct,
-        'held_positions': held_positions,
+        'sorted_results': sorted_results,
+        'top_results': top_results,
+        'stats': {
+            'total_count': total_count,
+            'strong_buy_count': strong_buy_count,
+            'buy_count': buy_count,
+            'consider_count': consider_count,
+        }
     }
 
 
-# ============== 生成V5持仓报告 ==============
+# ============== 生成晨间报告 ==============
 
-def generate_position_report(scan_results, analysis):
-    """生成V5持仓报告"""
+def generate_morning_report(analysis):
+    """生成V5晨间基金报告"""
     report_lines = []
+    top_results = analysis['top_results']
+    stats = analysis['stats']
 
     today = datetime.now()
     today_str = today.strftime("%Y年%m月%d日")
@@ -583,35 +464,35 @@ def generate_position_report(scan_results, analysis):
 
     # 标题
     report_lines.append("📅 " + today_str + " 星期" + weekday_str)
-    report_lines.append("💼 多持仓策略报告 V5.0（防高位回调版）")
+    report_lines.append("📊 基金晨间投资报告 V5.0（防高位回调版）")
     report_lines.append("=" * 60)
     report_lines.append("")
 
-    # 组合概况
-    report_lines.append("📊 组合概况")
+    # 市场概况
+    report_lines.append("📊 市场扫描概况")
     report_lines.append("━" * 60)
-    report_lines.append(f"持仓数量: {len([p for p in scan_results if p['status'] == 'held'])}只")
-    report_lines.append(f"投入成本: {analysis['total_invested']:.2f}元")
-    report_lines.append(f"当前市值: {analysis['total_current']:.2f}元")
-    report_lines.append(f"浮动盈亏: {analysis['total_profit']:+.2f}元 ({analysis['total_profit_pct']:+.2f}%)")
+    report_lines.append(f"扫描基金: {stats['total_count']}只ETF")
+    report_lines.append(f"🟢🟢🟢 强烈推荐: {stats['strong_buy_count']}只")
+    report_lines.append(f"🟢🟢 推荐: {stats['buy_count']}只")
+    report_lines.append(f"🟢 可以考虑: {stats['consider_count']}只")
     report_lines.append("")
 
-    # 持仓明细
-    report_lines.append("💼 持仓明细")
+    # Top 10推荐
+    report_lines.append("🎯 今日Top 10推荐")
     report_lines.append("━" * 60)
     report_lines.append("")
 
-    for result in scan_results:
-        if result['status'] == 'held':
-            profit_info = result['profit_info']
-            profit_symbol = "🟢" if profit_info['profit'] > 0 else "🔴" if profit_info['profit'] < 0 else "⚪"
+    for i, result in enumerate(top_results, 1):
+        symbol = "📈" if result['change_pct'] > 0 else "📉" if result['change_pct'] < 0 else "➡️"
 
-            report_lines.append(f"【{result['fund_name']}】")
-            report_lines.append(f"  成本: {profit_info['cost_nav']:.3f}  当前: {result['current_price']:.3f}")
-            report_lines.append(f"  盈亏: {profit_symbol} {profit_info['profit']:+.2f}元 ({profit_info['profit_pct']:+.2f}%)")
-            report_lines.append(f"  V5评分: {result['v5_score']:.0f} - {result['recommendation']}")
-            report_lines.append(f"  今日涨跌: {result['change_pct']:+.2f}%")
-            report_lines.append("")
+        report_lines.append(f"【{i}. {result['fund_name']}】")
+        report_lines.append(f"  代码: {result['fund_code']}")
+        report_lines.append(f"  板块: {result['category']}")
+        report_lines.append(f"  今日: {symbol} {result['change_pct']:+.2f}%")
+        report_lines.append(f"  V5评分: {result['v5_score']:.0f} - {result['recommendation']}")
+        report_lines.append(f"  风险: {result['risk']}")
+        report_lines.append(f"  建议: {result['action']}")
+        report_lines.append("")
 
     # V5算法说明
     report_lines.append("=" * 60)
@@ -624,54 +505,16 @@ def generate_position_report(scan_results, analysis):
     report_lines.append("• ✅ 成功避免红利ETF高位回调损失")
     report_lines.append("")
 
-    # 操作建议
-    report_lines.append("=" * 60)
-    report_lines.append("💡 今日操作建议")
-    report_lines.append("=" * 60)
-    report_lines.append("")
-
-    # 止损止盈检查
-    need_action = False
-    for result in scan_results:
-        if result['status'] == 'held':
-            position = next(p for p in MULTI_POSITIONS['positions'] if p['fund_code'] == result['fund_code'])
-            stop_loss = position['stop_loss']
-            take_profit = position['take_profit']
-            current_price = result['current_price']
-
-            if current_price <= stop_loss:
-                report_lines.append(f"⚠️ {result['fund_name']}: 触及止损线({stop_loss:.3f})，建议止损")
-                need_action = True
-            elif current_price >= take_profit:
-                report_lines.append(f"🎯 {result['fund_name']}: 触及止盈线({take_profit:.3f})，建议止盈")
-                need_action = True
-
-    if not need_action:
-        avg_score = sum(p['v5_score'] for p in scan_results if p['status'] == 'held') / len([p for p in scan_results if p['status'] == 'held'])
-
-        if analysis['total_profit_pct'] > 10:
-            report_lines.append("• 组合盈利超过10%，建议分批止盈")
-        elif analysis['total_profit_pct'] < -8:
-            report_lines.append("• 组合亏损接近8%，建议整体止损")
-        elif avg_score >= 70:
-            report_lines.append("• V5评分平均≥70，继续持有")
-        elif avg_score < 55:
-            report_lines.append("• V5评分平均<55，考虑减仓")
-        else:
-            report_lines.append("• 持仓稳定，继续观察")
-
-    report_lines.append("")
-
     # 风险提示
     report_lines.append("=" * 60)
     report_lines.append("⚠️ 风险提示")
     report_lines.append("=" * 60)
-    report_lines.append("• 单只基金止损: -10%")
-    report_lines.append("• 组合整体止损: -8%")
-    report_lines.append("• 本报告仅供参考，不构成投资建议")
-    report_lines.append("• V5算法防高位回调，避免追涨")
+    report_lines.append("• 投资有风险，入市需谨慎")
+    report_lines.append("• V5算法仅供参考，不构成投资建议")
+    report_lines.append("• 建议分批建仓，不要一次性满仓")
+    report_lines.append("• 单只基金止损建议-10%")
     report_lines.append("")
-    report_lines.append("🤖 Powered by V5.0 防高位回调算法 | 建仓日期: 2026-03-12")
+    report_lines.append("🤖 Powered by V5.0 防高位回调算法")
 
     return "\n".join(report_lines)
 
@@ -683,7 +526,7 @@ def send_serverchan(message):
     try:
         url = f"https://sctapi.ftqq.com/{SERVERCHAN_SENDKEY}.send"
         data = {
-            "title": f"💼 持仓报告V5.0 - {datetime.now().strftime('%m/%d')}",
+            "title": f"📊 基金晨报V5.0 - {datetime.now().strftime('%m/%d')}",
             "desp": message
         }
         response = requests.post(url, json=data, timeout=15)
@@ -705,25 +548,24 @@ def send_serverchan(message):
 
 def main():
     print("=" * 60)
-    print("💼 多持仓策略报告 V5.0（防高位回调版）")
+    print("📊 基金晨间投资报告 V5.0（防高位回调版）")
     print(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"📊 建仓日期: 2026-03-12")
     print("=" * 60)
     print()
 
     try:
-        # 扫描持仓ETF
+        # 扫描ETF基金池
         scan_results = scan_all_etds()
 
         if not scan_results:
             print("❌ 未获取到任何数据，无法生成报告")
             return
 
-        # 分析持仓
-        analysis = analyze_positions(scan_results)
+        # 分析排序
+        analysis = analyze_and_sort(scan_results)
 
         # 生成报告
-        report = generate_position_report(scan_results, analysis)
+        report = generate_morning_report(analysis)
 
         print("\n📊 报告预览:")
         print("=" * 60)
@@ -736,7 +578,7 @@ def main():
         success = send_serverchan(report)
 
         if success:
-            print("\n✅ 持仓报告发送完成！")
+            print("\n✅ 晨间报告发送完成！")
         else:
             print("\n❌ 发送失败")
 
