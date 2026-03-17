@@ -1,4 +1,4 @@
-name: 基金晨间投资报告 V2.0
+name: 基金晨间投资报告 V5.0
 
 on:
   schedule:
@@ -25,12 +25,12 @@ jobs:
         python -m pip install --upgrade pip
         pip install pandas numpy requests akshare tushare
 
-    - name: 运行基金晨间报告 V2.0
+    - name: 运行基金晨间报告 V5.0（防高位回调版）
       env:
         SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
         TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       run: |
-        python cloud_fund_advisor_v2.py
+        python cloud_fund_advisor_v5.py
 
     - name: 等待5秒（确保消息发送）
       run: sleep 5
