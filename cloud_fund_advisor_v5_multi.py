@@ -40,31 +40,12 @@ TUSHARE_TOKEN = os.getenv('TUSHARE_TOKEN', 'a30f4d314ad6f1e64729f7b3e2d38ba3a305
 TOP_N = 10
 MIN_SCORE = 50
 
-# V5.0: 实际持仓配置（2026-03-12建仓）
+# V5.0: 实际持仓配置（2026-03-17换仓）
+# 卖出红利ETF，买入中证500ETF
 MULTI_POSITIONS = {
     'positions': [
         {
-            'fund_code': '510300.SH',
-            'fund_name': '沪深300ETF',
-            'etf_code': 'sh510300',
-            'category': '宽基指数',
-            'cost_nav': 4.689,           # 建仓价格
-            'shares': 50,                 # 建仓份额
-            'principal': 250,             # 投入本金
-            'status': 'held',             # 状态: held(持有)
-            'buy_date': '2026-03-12',     # 建仓日期
-            'v4_score_buy': 76,           # 建仓时V4评分
-            'v5_score_buy': 61.8,         # 建仓时V5评分（更新）
-            'stop_loss': 4.220,           # 止损价(-10%)
-            'take_profit': 5.392,         # 止盈价(+15%)
-            # V5新增：距高点数据
-            'week52_high': 4837,
-            'week52_low': 4480,
-            'month6_high': 4800,
-            'month6_low': 4550,
-        },
-        {
-            'fund_code': '512800.SH',
+            'fund_code': '006697',
             'fund_name': '银行ETF',
             'etf_code': 'sh512800',
             'category': '金融',
@@ -73,77 +54,55 @@ MULTI_POSITIONS = {
             'principal': 200,
             'status': 'held',
             'buy_date': '2026-03-12',
-            'v4_score_buy': 82,
-            'v5_score_buy': 73.0,         # 建仓时V5评分（更新）
+            'v5_score_buy': 73.0,
             'stop_loss': 0.712,
             'take_profit': 0.910,
-            # V5新增：距高点数据
-            'week52_high': 6250,
-            'week52_low': 5450,
-            'month6_high': 6050,
-            'month6_low': 5580,
+            'week52_high': 0.850,
+            'week52_low': 0.710,
+            'month6_high': 0.830,
+            'month6_low': 0.720,
         },
         {
-            'fund_code': '510880.SH',
-            'fund_name': '红利ETF',
-            'etf_code': 'sh510880',
-            'category': '策略',
-            'cost_nav': 3.383,
+            'fund_code': '460300',
+            'fund_name': '沪深300ETF联接',
+            'etf_code': 'sh510300',
+            'category': '宽基指数',
+            'cost_nav': 4.689,
             'shares': 50,
-            'principal': 200,
+            'principal': 250,
             'status': 'held',
             'buy_date': '2026-03-12',
-            'v4_score_buy': 80,
-            'v5_score_buy': 65.5,         # 建仓时V5评分（更新）⚠️ 高位回落
-            'stop_loss': 3.045,
-            'take_profit': 3.890,
-            # V5新增：距高点数据
-            'week52_high': 2880,
-            'week52_low': 2520,
-            'month6_high': 2880,          # ⚠️ 6个月高点！
-            'month6_low': 2580,
+            'v5_score_buy': 61.8,
+            'stop_loss': 4.220,
+            'take_profit': 5.392,
+            'week52_high': 4.850,
+            'week52_low': 4.480,
+            'month6_high': 4.800,
+            'month6_low': 4.550,
         },
         {
-            'fund_code': '510150.SH',
-            'fund_name': '消费ETF',
-            'etf_code': 'sh510150',
-            'category': '消费',
-            'cost_nav': None,
-            'shares': None,
-            'principal': 200,
-            'status': 'pending',          # 待建仓
-            'buy_date': None,
-            'v4_score_buy': None,
-            'v5_score_buy': None,
-            'stop_loss': None,
-            'take_profit': None,
-            # V5新增：距高点数据
-            'week52_high': None,
-            'week52_low': None,
-        },
-        {
-            'fund_code': '159915.SZ',
-            'fund_name': '创业板ETF',
-            'etf_code': 'sz159915',
+            'fund_code': '004348',           # LOF基金代码
+            'fund_name': '南方中证500ETF',
+            'etf_code': 'sh510500',          # 对应场内ETF代码（用于获取实时数据）
             'category': '宽基指数',
-            'cost_nav': None,
-            'shares': None,
-            'principal': 150,
-            'status': 'pending',          # 待建仓
-            'buy_date': None,
-            'v4_score_buy': None,
-            'v5_score_buy': None,
-            'stop_loss': None,
+            'cost_nav': None,                # 明天收市确认
+            'shares': 170.92,                # 已确认份额
+            'principal': 170,                # 估算（约167.65元+手续费）
+            'status': 'held',
+            'buy_date': '2026-03-17',
+            'v5_score_buy': 77.5,
+            'stop_loss': None,               # 待确认成本后计算
             'take_profit': None,
-            # V5新增：距高点数据
-            'week52_high': None,
-            'week52_low': None,
+            'week52_high': 0.850,
+            'week52_low': 0.680,
+            'month6_high': 0.830,
+            'month6_low': 0.700,
         },
     ],
-    'total_principal': 1000,        # 总计划本金
-    'invested': 650,                # 已投入本金
-    'cash': 350,                    # 剩余现金
-    'build_strategy': 'batch',      # 分批建仓
+    'total_principal': 1000,
+    'invested': 620,                # 200+250+170
+    'cash': 380,
+    'build_strategy': 'mixed',      # 混合策略
     'first_batch_date': '2026-03-12',
 }
 
