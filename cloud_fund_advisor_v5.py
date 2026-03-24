@@ -1,43 +1,40 @@
-# -*- coding: utf-8 -*-
 """
-云端基金晨间投资顾问 V5.0 - 基金扫描版本
-基于V5算法的基金晨间扫描 - 防高位回调版
-
-核心改进：
-1. 新增距高点距离评分（20%权重）
-2. 新增近期涨幅风险评分（10%权重）
-3. 新增高位回落状态识别
-4. 优化趋势权重（50%→30%）
-
-功能：扫描30只主流ETF，推荐Top 10买入标的
+云端基金晨间投资顾问 V2.0 - 基于2026-03-10科创50暴力反转经验优化
+每天从主流ETF池中自动筛选推荐
+运行在GitHub Actions上，每天早晨8:30自动推送
 """
-
-import sys
-import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 import pandas as pd
 import numpy as np
 from datetime import datetime, date, timedelta
 import os
 import requests
+import akshare as ak
 import time
-
-try:
-    import tushare as ts
-    TUSHARE_AVAILABLE = True
-except ImportError:
-    TUSHARE_AVAILABLE = False
-    print("⚠️ Tushare未安装，将跳过相关功能")
 
 
 # ============== 配置 ==============
 
-SERVERCHAN_SENDKEY = os.getenv('SERVERCHAN_SENDKEY', 'SCT316817TqLtFpnKnwwbNV7bO1vJb3phv')
+# Server酱SendKey
+SERVERCHAN_SENDKEY = os.getenv('SERVERCHAN_SENDKEY', '')
+
+# Tushare Token（V2.0新增）
 TUSHARE_TOKEN = os.getenv('TUSHARE_TOKEN', 'a30f4d314ad6f1e64729f7b3e2d38ba3a305af8277269846fa1b9435')
 
-TOP_N = 10
-MIN_SCORE = 50
+# 自动筛选配置
+TOP_N = 10  # 推荐前N名
+MIN_SCORE = 50  # 最低评分要求
+
+# 用户持仓配置（V2.0新增）
+USER_POSITION = {
+    'fund_code': '011612',
+    'fund_name': '华夏科创50ETF联接A',
+    'index': '科创50',
+    'cost_nav': 1.111,
+    'principal': 1000,
+    'yesterday_nav': None,
+    'yesterday_change_pct': None,
+}
 
 
 # ============== 主流ETF基金池 ==============
@@ -94,201 +91,6 @@ ETF_POOL = {
     # 房地产
     "512200.SH": {"name": "房地产ETF", "category": "地产"},
 }
-
-
-# ============== V5算法 ==============
-
-def calculate_peak_distance_score(current_price, week52_high, week52_low):
-    """
-    距高点距离评分（V5新增，20%权重）
-
-    判断逻辑：
-    • 距高点<3%：追高风险极高 → 20分
-    • 距高点<6%且<20天：刚回落 → 50分
-    • 距高点>10%：安全边际高 → 100分
-    """
-    pct_from_high = ((current_price - week52_high) / week52_high) * 100
-    position_pct = ((current_price - week52_low) / (week52_high - week52_low)) * 100 if week52_high != week52_low else 50
-
-    score = 100
-    analysis = []
-    risk_level = "低"
-
-    # 判断是否处于高位区域
-    if abs(pct_from_high) < 3:
-        score = 20
-        risk_level = "极高"
-        analysis.append(f"⚠️ 距52周高点仅{abs(pct_from_high):.1f}%")
-    elif abs(pct_from_high) < 6:
-        if position_pct > 70:
-            score = 40
-            risk_level = "高"
-            analysis.append(f"⚠️ 距高点{abs(pct_from_high):.1f}%，高位区")
-        else:
-            score = 60
-            risk_level = "中等"
-            analysis.append(f"🟡 距高点{abs(pct_from_high):.1f}%")
-    elif abs(pct_from_high) < 10:
-        score = 70
-        risk_level = "中等"
-        analysis.append(f"✅ 距高点{abs(pct_from_high):.1f}%")
-    else:
-        score = 100
-        risk_level = "低"
-        analysis.append(f"✅ 距高点{abs(pct_from_high):.1f}%，安全")
-
-    return {
-        'score': score,
-        'analysis': analysis,
-        'risk_level': risk_level,
-        'pct_from_high': pct_from_high
-    }
-
-
-def calculate_v5_score(fund_code, fund_data, position_info=None):
-    """
-    V5算法评分 - 防高位回调版
-    权重：价格趋势30% + 距高点20% + 近期涨幅10% + 反弹20% + 板块10% + 波动10%
-    """
-    score = 50
-    details = []
-
-    change_pct = fund_data['change_pct']
-    category = fund_data['category']
-
-    # 1. 价格趋势评分（30%权重）- 降低权重防止高位误导
-    if change_pct > 2:
-        trend_score = 100
-        details.append("强势上涨")
-    elif change_pct > 0.5:
-        trend_score = 85
-        details.append("上涨趋势")
-    elif change_pct > -0.5:
-        trend_score = 60
-        details.append("震荡企稳")
-    elif change_pct > -2:
-        trend_score = 40
-        details.append("弱势震荡")
-    elif change_pct > -5:
-        trend_score = 20
-        details.append("下跌趋势")
-    else:
-        trend_score = 10
-        details.append("深度下跌")
-
-    score += (trend_score - 50) * 0.30
-
-    # 2. 距高点距离评分（20%权重）- V5新增
-    if position_info:
-        peak_result = calculate_peak_distance_score(
-            fund_data['current'],
-            position_info.get('week52_high', fund_data['current'] * 1.1),
-            position_info.get('week52_low', fund_data['current'] * 0.9)
-        )
-        score += (peak_result['score'] - 50) * 0.20
-        details.extend(peak_result['analysis'])
-
-        # 高位风险预警
-        if peak_result['risk_level'] in ['极高', '高']:
-            details.append(f"⚠️ 高位风险{peak_result['risk_level']}")
-
-    # 3. 近期涨幅风险评分（10%权重）- V5新增，防急涨
-    if change_pct > 3:
-        score -= 15 * 0.10
-        details.append("短期急涨")
-    elif change_pct > 1.5:
-        score -= 5 * 0.10
-        details.append("涨幅偏大")
-    elif change_pct < -3:
-        score += 10 * 0.10
-        details.append("释放风险")
-
-    # 4. 反弹幅度评分（20%权重）
-    if -2 <= change_pct <= 0.5:
-        score += 50 * 0.20
-        details.append("极佳买点")
-    elif -5 <= change_pct < -2:
-        score += 35 * 0.20
-        details.append("较好买点")
-    elif 0.5 < change_pct <= 2:
-        score += 20 * 0.20
-        details.append("可接受")
-    elif 2 < change_pct <= 5:
-        score -= 10 * 0.20
-        details.append("追风险中")
-    else:
-        score -= 20 * 0.20
-        details.append("追高风险高")
-
-    # 5. 板块属性评分（10%权重）
-    stable_categories = ['宽基指数', '金融', '消费', '策略']
-    growth_categories = ['科技', '医药', '新能源']
-
-    if category in stable_categories:
-        sector_score = 80
-        details.append("稳健板块")
-    elif category in growth_categories:
-        sector_score = 70
-        details.append("成长板块")
-    else:
-        sector_score = 60
-        details.append("周期板块")
-
-    score += (sector_score - 50) * 0.10
-
-    # 6. 波动性评分（10%权重）
-    if abs(change_pct) < 1:
-        score += 40 * 0.10
-        details.append("低波动")
-    elif abs(change_pct) < 3:
-        score += 20 * 0.10
-        details.append("中等波动")
-    else:
-        score -= 10 * 0.10
-        details.append("高波动")
-
-    # 生成建议
-    if score >= 75:
-        recommendation = "🟢🟢🟢 强烈推荐"
-        risk = "低风险"
-        action = "可以分批建仓"
-    elif score >= 65:
-        recommendation = "🟢🟢 推荐"
-        risk = "中等风险"
-        action = "可以考虑建仓"
-    elif score >= 55:
-        recommendation = "🟢 可以考虑"
-        risk = "中等风险"
-        action = "小仓位试探"
-    elif score >= 45:
-        recommendation = "🟠 观望"
-        risk = "中等风险"
-        action = "等待更好时机"
-    else:
-        recommendation = "🔴 不推荐"
-        risk = "较高风险"
-        action = "暂时回避"
-
-    if change_pct < -3:
-        recommendation = "🔴 不推荐"
-        action = "等待企稳信号"
-        details.append("下跌趋势，等待反转")
-
-    # V5特殊判断：高位回落
-    if position_info and '距高点' in str(details):
-        if '距52周高点仅' in ' '.join(details) or '高位区' in ' '.join(details):
-            if change_pct < 0:
-                recommendation = "🔴 高位回落"
-                action = "等待回调至安全区"
-                details.append("⚠️ 高位回落风险")
-
-    return {
-        'score': min(100, max(0, round(score, 2))),
-        'details': details,
-        'recommendation': recommendation,
-        'risk': risk,
-        'action': action
-    }
 
 
 # ============== 数据获取 ==============
@@ -352,109 +154,261 @@ def get_fund_data_tencent(code):
         return None
 
 
-def scan_all_etds():
-    """扫描所有ETF基金池的实时数据"""
-    results = []
+def scan_all_etfs():
+    """
+    扫描所有ETF，获取实时数据
+    返回: dict[基金代码] = {name, current, change_pct, category}
+    """
+    all_data = {}
+    success_count = 0
 
-    print(f"📡 扫描ETF基金池（V5算法）...")
-    print("=" * 60)
+    print(f"📡 开始扫描 {len(ETF_POOL)} 只主流ETF...")
+    print("=" * 50)
 
-    for fund_code, fund_info in ETF_POOL.items():
-        fund_name = fund_info['name']
-        category = fund_info['category']
-
-        # 确定ETF代码格式
-        if fund_code.endswith('.SH'):
-            etf_code = 'sh' + fund_code.split('.')[0]
-        else:
-            etf_code = 'sz' + fund_code.split('.')[0]
-
+    for fund_code, info in ETF_POOL.items():
         try:
+            # 生成代码格式
+            if 'SH' in fund_code:
+                sina_code = f"sh{fund_code.split('.')[0]}"
+            else:
+                sina_code = f"sz{fund_code.split('.')[0]}"
+
             # 尝试获取数据
-            data = get_fund_data_sina(etf_code)
+            data = get_fund_data_sina(sina_code)
 
             if not data:
-                data = get_fund_data_tencent(etf_code)
+                data = get_fund_data_tencent(sina_code)
 
             if data:
-                # V5评分（简化版，不需要持仓信息）
-                fund_data = {
-                    'name': fund_name,
+                all_data[fund_code] = {
+                    'name': data['name'],
                     'current': data['current'],
                     'change_pct': data['change_pct'],
-                    'category': category
+                    'category': info['category']
                 }
-
-                score_result = calculate_v5_score(fund_code, fund_data, position_info=None)
-
-                results.append({
-                    'fund_code': fund_code,
-                    'fund_name': fund_name,
-                    'category': category,
-                    'current_price': data['current'],
-                    'change_pct': data['change_pct'],
-                    'v5_score': score_result['score'],
-                    'recommendation': score_result['recommendation'],
-                    'risk': score_result['risk'],
-                    'action': score_result['action'],
-                    'details': score_result['details'],
-                })
+                success_count += 1
 
                 symbol = "📈" if data['change_pct'] > 0 else "📉" if data['change_pct'] < 0 else "➡️"
-                print(f"  {fund_name:12s} {symbol} {data['change_pct']:+6.2f}%  V5:{score_result['score']:.0f}  {score_result['recommendation']}")
+                print(f"✅ {info['category']:8s} {data['name']:12s} {symbol} {data['change_pct']:+6.2f}%")
 
+            # 避免请求过快
             time.sleep(0.15)
 
         except Exception as e:
-            print(f"❌ {fund_name}: 获取失败")
+            continue
 
-    print("=" * 60)
-    return results
+    print("=" * 50)
+    print(f"✅ 成功获取 {success_count}/{len(ETF_POOL)} 只基金数据\n")
+
+    return all_data if all_data else None
 
 
-# ============== 分析与排序 ==============
+# ============== 技术分析与评分 ==============
 
-def analyze_and_sort(scan_results):
-    """分析并排序扫描结果"""
-    # 按V5评分排序
-    sorted_results = sorted(scan_results, key=lambda x: x['v5_score'], reverse=True)
+def calculate_atr(change_pcts, period=14):
+    """计算平均真实波动范围"""
+    if len(change_pcts) < period:
+        return abs(change_pcts.iloc[-1]) if len(change_pcts) > 0 else 0
 
-    # 筛选Top N
-    top_results = sorted_results[:TOP_N]
+    atr = change_pcts.rolling(window=period).mean()
+    return abs(atr.iloc[-1]) if not np.isnan(atr.iloc[-1]) else 0
 
-    # 统计
-    total_count = len(scan_results)
-    strong_buy_count = len([r for r in scan_results if r['v5_score'] >= 75])
-    buy_count = len([r for r in scan_results if 65 <= r['v5_score'] < 75])
-    consider_count = len([r for r in scan_results if 55 <= r['v5_score'] < 65])
 
-    print(f"\n📊 扫描统计")
-    print("=" * 60)
-    print(f"总扫描: {total_count}只")
-    print(f"🟢🟢🟢 强烈推荐: {strong_buy_count}只")
-    print(f"🟢🟢 推荐: {buy_count}只")
-    print(f"🟢 可以考虑: {consider_count}只")
-    print("=" * 60)
+def calculate_volatility(change_pcts, period=20):
+    """计算波动率"""
+    if len(change_pcts) < period:
+        return change_pcts.std() if len(change_pcts) > 0 else 0
+
+    vol = change_pcts.rolling(window=period).std()
+    return vol.iloc[-1] if not np.isnan(vol.iloc[-1]) else 0
+
+
+def predict_etf_movement(fund_data):
+    """
+    预测ETF短期走势
+    返回: {
+        'expected_up': 预计上涨百分比,
+        'expected_down': 预计下跌百分比,
+        'confidence': 预测置信度,
+        'buy_timing': 买入时机建议,
+        'sell_timing': 卖出时机建议
+    }
+    """
+    change_pct = fund_data['change_pct']
+    category = fund_data['category']
+
+    # 基于当前涨跌幅和历史波动率估算
+    base_volatility = 2.0  # 基础日波动率
+
+    # 根据板块调整波动率
+    if category in ['军工', '资源', '新能源']:
+        base_volatility = 3.0
+    elif category in ['宽基指数', '金融', '消费']:
+        base_volatility = 1.8
+    elif category in ['科技', '医药']:
+        base_volatility = 2.5
+
+    # 根据当前涨跌状态调整预测
+    if change_pct < -3:
+        # 大跌后，反弹概率大
+        expected_up = base_volatility * 1.5
+        expected_down = base_volatility * 0.8
+        buy_timing = "🟢 当前接近较好买入时机"
+        sell_timing = "🟢 暂无卖出信号"
+    elif change_pct < -1:
+        # 小跌后
+        expected_up = base_volatility * 1.2
+        expected_down = base_volatility * 0.9
+        buy_timing = "🟡 可考虑逢低买入"
+        sell_timing = "🟢 继续持有"
+    elif change_pct <= 1:
+        # 震荡
+        expected_up = base_volatility
+        expected_down = base_volatility
+        buy_timing = "🟡 观望为主，等待方向明确"
+        sell_timing = "🟢 继续持有"
+    elif change_pct <= 3:
+        # 小涨
+        expected_up = base_volatility * 0.9
+        expected_down = base_volatility * 1.1
+        buy_timing = "🟠 建议等待回调"
+        sell_timing = "🟡 关注卖出信号"
+    else:
+        # 大涨
+        expected_up = base_volatility * 0.7
+        expected_down = base_volatility * 1.5
+        buy_timing = "🔴 不建议追高买入"
+        sell_timing = "🟠 可考虑分批止盈"
+
+    # 计算置信度
+    confidence = 60
+    if abs(change_pct) > 2:
+        confidence += 10
+    if category in ['宽基指数', '消费', '医药']:
+        confidence += 5
 
     return {
-        'sorted_results': sorted_results,
-        'top_results': top_results,
-        'stats': {
-            'total_count': total_count,
-            'strong_buy_count': strong_buy_count,
-            'buy_count': buy_count,
-            'consider_count': consider_count,
-        }
+        'expected_up': round(expected_up, 2),
+        'expected_down': round(expected_down, 2),
+        'confidence': min(confidence, 85),
+        'buy_timing': buy_timing,
+        'sell_timing': sell_timing
     }
 
 
-# ============== 生成晨间报告 ==============
+def calculate_etf_score(fund_code, fund_data):
+    """
+    ETF综合评分系统
+    返回: {score, details, recommendation}
+    """
+    score = 50  # 基础分
+    details = []
 
-def generate_morning_report(analysis):
-    """生成V5晨间基金报告"""
+    # 1. 涨跌幅评分 (-15 ~ +15)
+    change_pct = fund_data['change_pct']
+    if -2 <= change_pct <= 0.5:
+        score += 15
+        details.append("微跌企稳")
+    elif -5 <= change_pct < -2:
+        score += 10
+        details.append("小幅回调")
+    elif 0.5 < change_pct <= 2:
+        score += 5
+        details.append("小幅上涨")
+    elif change_pct > 5:
+        score -= 10
+        details.append("涨幅过大")
+    elif change_pct < -5:
+        score -= 5
+        details.append("跌幅较大")
+
+    # 2. 类别权重调整
+    category = fund_data['category']
+    if category in ['宽基指数', '医药', '消费', '策略', '金融']:
+        score += 5
+        details.append("稳健板块")
+    elif category in ['军工', '资源', '新能源']:
+        score -= 5
+        details.append("高波动板块")
+
+    # 3. 价格位置评分 (基于涨跌幅估算)
+    if -3 <= change_pct <= 0:
+        score += 10
+        details.append("相对低位")
+
+    # 4. 趋势评分
+    if change_pct > 0:
+        score += 5
+        details.append("上涨趋势")
+    elif change_pct < -1:
+        score -= 5
+        details.append("下跌趋势")
+
+    # 5. 波动率惩罚
+    if abs(change_pct) > 4:
+        score -= 5
+        details.append("高波动")
+
+    # 生成建议
+    if score >= 70:
+        recommendation = "⭐⭐⭐ 强烈推荐"
+        risk = "低风险"
+    elif score >= 60:
+        recommendation = "⭐⭐ 推荐"
+        risk = "中等风险"
+    elif score >= 50:
+        recommendation = "⭐ 观望"
+        risk = "中等风险"
+    else:
+        recommendation = "❌ 回避"
+        risk = "较高风险"
+
+    return {
+        'score': min(100, max(0, score)),
+        'details': details,
+        'recommendation': recommendation,
+        'risk': risk
+    }
+
+
+def screen_and_rank(all_fund_data):
+    """
+    筛选并排名ETF
+    返回: Top N 推荐
+    """
+    scored_funds = []
+
+    for fund_code, fund_data in all_fund_data.items():
+        score_result = calculate_etf_score(fund_code, fund_data)
+        prediction = predict_etf_movement(fund_data)
+
+        scored_funds.append({
+            'code': fund_code,
+            'name': fund_data['name'],
+            'current': fund_data['current'],
+            'change_pct': fund_data['change_pct'],
+            'category': fund_data['category'],
+            **score_result,
+            'prediction': prediction
+        })
+
+    # 按评分排序
+    scored_funds.sort(key=lambda x: x['score'], reverse=True)
+
+    # 筛选Top N
+    top_funds = [f for f in scored_funds if f['score'] >= MIN_SCORE][:TOP_N]
+
+    return top_funds, scored_funds[:20]  # 返回推荐和前20名
+
+
+# ============== 生成报告 ==============
+
+def generate_morning_report(top_funds, all_top_funds):
+    """生成晨间投资报告"""
+    if not top_funds:
+        return None
+
     report_lines = []
-    top_results = analysis['top_results']
-    stats = analysis['stats']
 
     today = datetime.now()
     today_str = today.strftime("%Y年%m月%d日")
@@ -464,57 +418,114 @@ def generate_morning_report(analysis):
 
     # 标题
     report_lines.append("📅 " + today_str + " 星期" + weekday_str)
-    report_lines.append("📊 基金晨间投资报告 V5.0（防高位回调版）")
-    report_lines.append("=" * 60)
+    report_lines.append("🌅 基金晨间投资报告")
+    report_lines.append("=" * 50)
+    report_lines.append("")
+    report_lines.append("⏰ 今日开盘时间: 9:30")
+    report_lines.append(f"📊 扫描基金池: {len(ETF_POOL)}只主流ETF")
+    report_lines.append(f"🎯 推荐范围: 前{TOP_N}名 (评分≥{MIN_SCORE})")
     report_lines.append("")
 
-    # 市场概况
-    report_lines.append("📊 市场扫描概况")
-    report_lines.append("━" * 60)
-    report_lines.append(f"扫描基金: {stats['total_count']}只ETF")
-    report_lines.append(f"🟢🟢🟢 强烈推荐: {stats['strong_buy_count']}只")
-    report_lines.append(f"🟢🟢 推荐: {stats['buy_count']}只")
-    report_lines.append(f"🟢 可以考虑: {stats['consider_count']}只")
-    report_lines.append("")
-
-    # Top 10推荐
-    report_lines.append("🎯 今日Top 10推荐")
-    report_lines.append("━" * 60)
-    report_lines.append("")
-
-    for i, result in enumerate(top_results, 1):
-        symbol = "📈" if result['change_pct'] > 0 else "📉" if result['change_pct'] < 0 else "➡️"
-
-        report_lines.append(f"【{i}. {result['fund_name']}】")
-        report_lines.append(f"  代码: {result['fund_code']}")
-        report_lines.append(f"  板块: {result['category']}")
-        report_lines.append(f"  今日: {symbol} {result['change_pct']:+.2f}%")
-        report_lines.append(f"  V5评分: {result['v5_score']:.0f} - {result['recommendation']}")
-        report_lines.append(f"  风险: {result['risk']}")
-        report_lines.append(f"  建议: {result['action']}")
+    # 今日推荐
+    if top_funds:
+        report_lines.append("🏆 今日重点关注推荐")
+        report_lines.append("━" * 50)
         report_lines.append("")
 
-    # V5算法说明
-    report_lines.append("=" * 60)
-    report_lines.append("🎯 V5算法核心优势")
-    report_lines.append("=" * 60)
-    report_lines.append("• ✅ 新增距高点距离评分（20%权重）")
-    report_lines.append("• ✅ 新增近期涨幅风险评分（10%权重）")
-    report_lines.append("• ✅ 新增高位回落状态识别")
-    report_lines.append("• ✅ 优化趋势权重（50%→30%）")
-    report_lines.append("• ✅ 成功避免红利ETF高位回调损失")
+        for i, fund in enumerate(top_funds, 1):
+            change_symbol = "📈" if fund['change_pct'] > 0 else "📉" if fund['change_pct'] < 0 else "➡️"
+
+            report_lines.append(f"【#{i}】{fund['name']} ({fund['code']})")
+            report_lines.append(f"  评分: {fund['score']}/100  {fund['risk']}")
+            report_lines.append(f"  最新价: {fund['current']:.3f}  {change_symbol} {fund['change_pct']:+.2f}%")
+            report_lines.append(f"  板块: {fund['category']}")
+            report_lines.append(f"  💡 {fund['recommendation']}")
+            report_lines.append("")
+
+            # 新增：价格预测信息
+            pred = fund['prediction']
+            report_lines.append(f"  📊 短期预测 (置信度: {pred['confidence']}%):")
+            report_lines.append(f"     - 预计涨幅: +{pred['expected_up']}%")
+            report_lines.append(f"     - 预计跌幅: -{pred['expected_down']}%")
+            report_lines.append("")
+
+            # 新增：买卖时机
+            report_lines.append(f"  ⏰ 操作时机:")
+            report_lines.append(f"     - 买入: {pred['buy_timing']}")
+            report_lines.append(f"     - 卖出: {pred['sell_timing']}")
+            report_lines.append("")
+
+            report_lines.append(f"  🔍 理由: {' | '.join(fund['details'][:3])}")
+            report_lines.append("")
+
+    # Top 20 排行
+    if all_top_funds:
+        report_lines.append("=" * 50)
+        report_lines.append("📊 Top 20 排行榜")
+        report_lines.append("━" * 50)
+        report_lines.append("")
+
+        for i, fund in enumerate(all_top_funds, 1):
+            change_symbol = "📈" if fund['change_pct'] > 0 else "📉" if fund['change_pct'] < 0 else "➡️"
+            recommend_short = fund['recommendation'].replace('⭐⭐⭐', '★★★').replace('⭐⭐', '★★').replace('⭐', '★').replace('❌', '×')
+
+            report_lines.append(
+                f"#{i:2d} {fund['name']:10s} {fund['score']:3d}分 "
+                f"{change_symbol} {fund['change_pct']:+6.2f}% "
+                f"{recommend_short}"
+            )
+
+        report_lines.append("")
+
+    # 市场分析
+    all_changes = [f['change_pct'] for f in all_top_funds]
+    avg_change = sum(all_changes) / len(all_changes) if all_changes else 0
+    up_count = sum(1 for c in all_changes if c > 0)
+    down_count = sum(1 for c in all_changes if c < 0)
+
+    report_lines.append("=" * 50)
+    report_lines.append("📈 市场情绪")
+    report_lines.append("=" * 50)
+    report_lines.append(f"平均涨跌: {avg_change:+.2f}%")
+    report_lines.append(f"上涨/下跌: {up_count}/{down_count}")
+
+    if avg_change > 1:
+        sentiment = "🟢 市场偏强"
+    elif avg_change < -1:
+        sentiment = "🔴 市场偏弱"
+    else:
+        sentiment = "🟡 市场中性"
+
+    report_lines.append(f"整体情绪: {sentiment}")
     report_lines.append("")
 
-    # 风险提示
-    report_lines.append("=" * 60)
-    report_lines.append("⚠️ 风险提示")
-    report_lines.append("=" * 60)
-    report_lines.append("• 投资有风险，入市需谨慎")
-    report_lines.append("• V5算法仅供参考，不构成投资建议")
-    report_lines.append("• 建议分批建仓，不要一次性满仓")
-    report_lines.append("• 单只基金止损建议-10%")
+    # 操作建议
+    report_lines.append("=" * 50)
+    report_lines.append("💡 今日操作建议")
+    report_lines.append("=" * 50)
     report_lines.append("")
-    report_lines.append("🤖 Powered by V5.0 防高位回调算法")
+
+    if avg_change > 1:
+        report_lines.append("• 市场强势，可适当参与")
+        report_lines.append("• 关注评分≥60的ETF")
+    elif avg_change < -1:
+        report_lines.append("• 市场调整，谨慎为主")
+        report_lines.append("• 等待企稳信号")
+    else:
+        report_lines.append("• 市场震荡，稳健操作")
+        report_lines.append("• 可小仓位试探")
+
+    report_lines.append("")
+
+    # 免责声明
+    report_lines.append("=" * 50)
+    report_lines.append("📌 风险提示")
+    report_lines.append("=" * 50)
+    report_lines.append("• 本报告仅供参考，不构成投资建议")
+    report_lines.append("• ETF有风险，投资需谨慎")
+    report_lines.append("• 建议结合自身风险承受能力")
+    report_lines.append("")
+    report_lines.append("🤖 Powered by GitHub Actions | 自动筛选")
 
     return "\n".join(report_lines)
 
@@ -526,7 +537,7 @@ def send_serverchan(message):
     try:
         url = f"https://sctapi.ftqq.com/{SERVERCHAN_SENDKEY}.send"
         data = {
-            "title": f"📊 基金晨报V5.0 - {datetime.now().strftime('%m/%d')}",
+            "title": f"🌅 基金晨间报告 - {datetime.now().strftime('%m/%d')}",
             "desp": message
         }
         response = requests.post(url, json=data, timeout=15)
@@ -546,34 +557,83 @@ def send_serverchan(message):
 
 # ============== 主程序 ==============
 
+def send_error_notification(error_msg):
+    """发送错误通知"""
+    try:
+        url = f"https://sctapi.ftqq.com/{SERVERCHAN_SENDKEY}.send"
+        data = {
+            "title": f"⚠️ 基金报告推送失败 - {datetime.now().strftime('%m/%d %H:%M')}",
+            "desp": error_msg
+        }
+        requests.post(url, json=data, timeout=15)
+    except:
+        pass
+
+
 def main():
-    print("=" * 60)
-    print("📊 基金晨间投资报告 V5.0（防高位回调版）")
+    print("=" * 50)
+    print("🌅 基金晨间投资顾问启动")
     print(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 60)
+    print(f"📊 自动筛选模式")
+    print("=" * 50)
     print()
 
     try:
-        # 扫描ETF基金池
-        scan_results = scan_all_etds()
+        # 1. 扫描所有ETF
+        all_data = scan_all_etfs()
 
-        if not scan_results:
-            print("❌ 未获取到任何数据，无法生成报告")
+        if not all_data or len(all_data) < 5:
+            error_msg = f"""获取数据不足，无法生成报告
+
+可能原因：
+• 当前时间：{datetime.now().strftime('%H:%M')}
+• 市场状态：未开盘或非交易时间
+• API问题：数据源可能暂时不可用
+
+建议：
+• 请在交易时间（9:30-15:00）手动触发测试
+• 或将定时任务调整为9:30之后执行
+
+获取数据量：{len(all_data) if all_data else 0} / 32
+"""
+            print("❌ 获取数据不足，无法生成报告")
+            send_error_notification(error_msg)
             return
 
-        # 分析排序
-        analysis = analyze_and_sort(scan_results)
+        # 2. 评分筛选
+        print("📊 正在分析评分...")
+        top_funds, all_top_funds = screen_and_rank(all_data)
 
-        # 生成报告
-        report = generate_morning_report(analysis)
+        if not top_funds:
+            error_msg = f"""没有符合条件的推荐
 
-        print("\n📊 报告预览:")
-        print("=" * 60)
-        print(report[:1000] + "...")
-        print("=" * 60)
+分析完成，但没有筛选出符合条件的ETF
+• 当前时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}
+• 分析基金数：{len(all_data)}
+• 评分标准：最低{MIN_SCORE}分
+
+这可能是市场整体行情导致的正常现象
+"""
+            print("⚠️ 没有符合条件的推荐")
+            send_error_notification(error_msg)
+            return
+
+        print(f"✅ 筛选出 {len(top_funds)} 只推荐ETF\n")
+
+        # 3. 生成报告
+        report = generate_morning_report(top_funds, all_top_funds)
+
+        if not report:
+            print("❌ 生成报告失败")
+            return
+
+        print("📊 报告预览:")
+        print("=" * 50)
+        print(report[:500] + "...")
+        print("=" * 50)
         print()
 
-        # 发送消息
+        # 4. 发送消息
         print("📤 正在发送到微信...")
         success = send_serverchan(report)
 
@@ -582,12 +642,17 @@ def main():
         else:
             print("\n❌ 发送失败")
 
-        print("=" * 60)
+        print("=" * 50)
 
     except Exception as e:
+        error_msg = f"""程序运行异常
+
+错误信息：{str(e)}
+
+请检查代码或联系管理员
+"""
         print(f"❌ 运行异常: {e}")
-        import traceback
-        traceback.print_exc()
+        send_error_notification(error_msg)
 
 
 if __name__ == "__main__":
