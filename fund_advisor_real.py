@@ -554,8 +554,201 @@ def get_best_timing(df, current_price, atr, rsi, macd, bollinger, prediction):
     }
 
 
-def generate_etf_advice(fund_code, fund_data):
-    """场内ETF基金操作建议"""
+def calculate_dynamic_stop_loss(current_nav, cost_nav, profit_pct, atr, volatility, holding_period=0):
+    """
+    动态止损计算 - 根据市场波动和盈利情况调整止损位
+
+    参数:
+    - current_nav: 当前净值
+    - cost_nav: 持仓成本
+    - profit_pct: 当前盈利百分比（正数表示盈利）
+    - atr: 平均真实波动范围
+    - volatility: 波动率
+    - holding_period: 持有天数
+
+    返回: {
+        'stop_loss': 止损价位,
+        'stop_loss_pct': 止损百分比,
+        'trailing_stop': 是否启用移动止损,
+        'reason': 止损位设置原因
+    }
+    """
+    # 计算基础止损百分比
+    base_stop_pct = -2.0  # 默认-2%止损
+
+    # 根据波动率调整止损幅度
+    if volatility > 30:
+        base_stop_pct = -3.5  # 高波动，给予更多空间
+    elif volatility > 20:
+        base_stop_pct = -2.5  # 中等波动
+    else:
+        base_stop_pct = -1.5  # 低波动，可以收紧
+
+    # 根据ATR调整（日线级别）
+    atr_pct = (atr / current_nav * 100) if current_nav > 0 else 0
+    if atr_pct > 2:
+        base_stop_pct = min(base_stop_pct, -3.0)  # 波动大，放宽止损
+
+    # 动态调整：根据盈利情况上移止损位
+    if profit_pct > 5:
+        # 盈利超过5%，止损移至+2%（保护部分利润）
+        stop_loss_pct = 2.0
+        trailing_stop = True
+        reason = "盈利>5%，启用移动止损保护利润"
+    elif profit_pct > 3:
+        # 盈利超过3%，止损移至成本价（保本）
+        stop_loss_pct = 0
+        trailing_stop = True
+        reason = "盈利>3%，止损移至成本价保本"
+    elif profit_pct > 1:
+        # 盈利1-3%，止损移至-1%（保护已有收益）
+        stop_loss_pct = -1.0
+        trailing_stop = True
+        reason = "盈利>1%，收紧止损至-1%保护收益"
+    else:
+        # 亏损或微利，使用基础止损
+        stop_loss_pct = base_stop_pct
+        trailing_stop = False
+        reason = f"基础止损{base_stop_pct}%"
+
+    # 计算止损价位
+    stop_loss_nav = current_nav * (1 + stop_loss_pct / 100)
+
+    return {
+        'stop_loss': round(stop_loss_nav, 4),
+        'stop_loss_pct': round(stop_loss_pct, 2),
+        'trailing_stop': trailing_stop,
+        'reason': reason,
+        'base_stop_pct': round(base_stop_pct, 2)
+    }
+
+
+def calculate_pyramid_positions(current_nav, cost_nav, current_position=1000):
+    """
+    金字塔分批建仓策略
+
+    参数:
+    - current_nav: 当前净值
+    - cost_nav: 平均成本
+    - current_position: 当前持仓金额
+
+    返回: {
+        'positions': 建仓层级列表,
+        'total_add_amount': 总加仓金额,
+        'risk_level': 风险等级
+    }
+    """
+    # 计算当前回撤百分比
+    drawdown_pct = ((current_nav - cost_nav) / cost_nav * 100) if cost_nav > 0 else 0
+
+    positions = []
+    total_add = 0
+
+    # 金字塔建仓层级
+    if drawdown_pct <= -2:
+        # 第一层：回撤-2%，加仓20%
+        amount1 = current_position * 0.2
+        positions.append({
+            'level': 1,
+            'trigger': f"回撤≤-2%",
+            'add_amount': round(amount1, 2),
+            'total_position': round(current_position + amount1, 2),
+            'avg_cost': round((current_position * cost_nav + amount1 * current_nav) / (current_position + amount1), 4)
+        })
+        total_add += amount1
+
+    if drawdown_pct <= -4:
+        # 第二层：回撤-4%，加仓30%
+        amount2 = current_position * 0.3
+        positions.append({
+            'level': 2,
+            'trigger': f"回撤≤-4%",
+            'add_amount': round(amount2, 2),
+            'total_position': round(current_position + amount2 + total_add, 2),
+            'avg_cost': round((current_position * cost_nav + (amount2 + total_add) * current_nav) / (current_position + amount2 + total_add), 4)
+        })
+        total_add += amount2
+
+    if drawdown_pct <= -6:
+        # 第三层：回撤-6%，加仓50%
+        amount3 = current_position * 0.5
+        positions.append({
+            'level': 3,
+            'trigger': f"回撤≤-6%",
+            'add_amount': round(amount3, 2),
+            'total_position': round(current_position + amount3 + total_add, 2),
+            'avg_cost': round((current_position * cost_nav + (amount3 + total_add) * current_nav) / (current_position + amount3 + total_add), 4)
+        })
+        total_add += amount3
+
+    # 风险等级
+    if drawdown_pct <= -6:
+        risk_level = "高风险（已触发最大加仓）"
+    elif drawdown_pct <= -4:
+        risk_level = "中高风险（已触发第二层加仓）"
+    elif drawdown_pct <= -2:
+        risk_level = "中等风险（已触发第一层加仓）"
+    else:
+        risk_level = "低风险（未触发加仓）"
+
+    return {
+        'positions': positions,
+        'total_add_amount': round(total_add, 2),
+        'current_drawdown': round(drawdown_pct, 2),
+        'risk_level': risk_level
+    }
+
+
+def check_crash_alert(current_change, threshold=-2.5):
+    """
+    暴跌预警系统
+
+    参数:
+    - current_change: 当前涨跌幅
+    - threshold: 预警阈值（默认-2.5%）
+
+    返回: {
+        'alert_level': 预警等级,
+        'alert_message': 预警信息,
+        'suggested_action': 建议操作
+    }
+    """
+    if current_change <= -5.0:
+        return {
+            'alert_level': '🔴 极端暴跌',
+            'alert_message': f'暴跌{current_change:.2f}%，市场恐慌',
+            'suggested_action': '立即减仓50%或全部止损'
+        }
+    elif current_change <= -3.5:
+        return {
+            'alert_level': '🟠 严重暴跌',
+            'alert_message': f'大跌{current_change:.2f}%，启动紧急保护',
+            'suggested_action': '尾盘前减仓30%或准备止损'
+        }
+    elif current_change <= -2.5:
+        return {
+            'alert_level': '🟡 暴跌预警',
+            'alert_message': f'下跌{current_change:.2f}%，关注反弹',
+            'suggested_action': '观察尾盘，若维持跌幅考虑减仓'
+        }
+    else:
+        return {
+            'alert_level': '🟢 正常波动',
+            'alert_message': f'涨跌幅{current_change:+.2f}%在正常范围',
+            'suggested_action': '按原策略执行'
+        }
+
+
+def generate_etf_advice(fund_code, fund_data, position_info=None):
+    """
+    场内ETF基金操作建议（增强版）
+
+    position_info: 持仓信息 {
+        'cost_nav': 成本净值,
+        'position_amount': 持仓金额,
+        'holding_days': 持有天数
+    }
+    """
     df = fund_data['df']
     fund_name = fund_data['name']
 
@@ -585,6 +778,32 @@ def generate_etf_advice(fund_code, fund_data):
 
     # 新增：最佳买卖时机判断
     timing = get_best_timing(df, yesterday_nav, atr, rsi, macd, bollinger, prediction)
+
+    # 新增：持仓分析（如果提供了持仓信息）
+    dynamic_stop_loss = None
+    pyramid_positions = None
+    crash_alert = None
+
+    if position_info:
+        cost_nav = position_info.get('cost_nav', yesterday_nav)
+        position_amount = position_info.get('position_amount', 1000)
+        holding_days = position_info.get('holding_days', 0)
+
+        # 计算当前盈利
+        profit_pct = (yesterday_nav - cost_nav) / cost_nav * 100 if cost_nav > 0 else 0
+
+        # 动态止损
+        dynamic_stop_loss = calculate_dynamic_stop_loss(
+            yesterday_nav, cost_nav, profit_pct, atr, volatility, holding_days
+        )
+
+        # 金字塔加仓
+        pyramid_positions = calculate_pyramid_positions(
+            yesterday_nav, cost_nav, position_amount
+        )
+
+    # 暴跌预警（基于今日盘中涨跌幅）
+    crash_alert = check_crash_alert(yesterday_change, threshold=-2.5)
 
     # 评分
     score = 50
@@ -625,6 +844,11 @@ def generate_etf_advice(fund_code, fund_data):
         score -= 5
         reasons.append("卖出信号较强")
 
+    # 根据暴跌预警调整评分
+    if crash_alert['alert_level'] in ['🔴 极端暴跌', '🟠 严重暴跌']:
+        score -= 15
+        reasons.append(crash_alert['alert_level'])
+
     # 生成建议
     if score >= 70:
         action = "可以考虑买入"
@@ -646,7 +870,13 @@ def generate_etf_advice(fund_code, fund_data):
     # 操作区间
     buy_range_low = sr['support'] * 1.005
     buy_range_high = sr['current'] * 0.995
-    stop_loss = sr['support'] * 0.97
+
+    # 使用动态止损（如果有持仓信息）
+    if dynamic_stop_loss:
+        stop_loss = dynamic_stop_loss['stop_loss']
+    else:
+        stop_loss = sr['support'] * 0.97
+
     target = sr['resistance'] * 0.98
 
     return {
@@ -673,7 +903,11 @@ def generate_etf_advice(fund_code, fund_data):
         'timing': timing,
         'volatility': round(volatility, 2),
         'macd': round(macd['macd'], 4),
-        'bollinger': bollinger
+        'bollinger': bollinger,
+        # 增强功能
+        'dynamic_stop_loss': dynamic_stop_loss,
+        'pyramid_positions': pyramid_positions,
+        'crash_alert': crash_alert
     }
 
 
@@ -826,6 +1060,36 @@ def generate_morning_report(all_fund_data):
             report_lines.append(f"     - 止损位: {advice['stop_loss']:.4f}")
             report_lines.append(f"     - 目标位: {advice['target']:.4f}")
             report_lines.append("")
+
+            # 新增：动态止损信息
+            if advice['dynamic_stop_loss']:
+                dynamic_sl = advice['dynamic_stop_loss']
+                report_lines.append(f"  🛡️ 动态止损系统:")
+                report_lines.append(f"     - 当前止损位: {dynamic_sl['stop_loss']:.4f} ({dynamic_sl['stop_loss_pct']:+.1f}%)")
+                report_lines.append(f"     - 止损策略: {dynamic_sl['reason']}")
+                if dynamic_sl['trailing_stop']:
+                    report_lines.append(f"     - ✅ 移动止损已启用（保护利润）")
+                else:
+                    report_lines.append(f"     - 基础止损: {dynamic_sl['base_stop_pct']:.1f}%")
+                report_lines.append("")
+
+            # 新增：暴跌预警
+            crash_alert = advice['crash_alert']
+            if crash_alert['alert_level'] != '🟢 正常波动':
+                report_lines.append(f"  ⚠️ {crash_alert['alert_level']}: {crash_alert['alert_message']}")
+                report_lines.append(f"     - 建议操作: {crash_alert['suggested_action']}")
+                report_lines.append("")
+
+            # 新增：金字塔建仓策略（如果有触发）
+            if advice['pyramid_positions'] and advice['pyramid_positions']['positions']:
+                pyramid = advice['pyramid_positions']
+                report_lines.append(f"  🔺 金字塔建仓策略:")
+                report_lines.append(f"     - 当前回撤: {pyramid['current_drawdown']:+.1f}%")
+                report_lines.append(f"     - 风险等级: {pyramid['risk_level']}")
+                for pos in pyramid['positions']:
+                    report_lines.append(f"     - 第{pos['level']}层: {pos['trigger']}, 加仓{pos['add_amount']}元")
+                    report_lines.append(f"       总仓位: {pos['total_position']}元, 成本: {pos['avg_cost']:.4f}")
+                report_lines.append("")
 
             report_lines.append(f"  🔍 技术分析:")
             report_lines.append(f"     - 趋势: {advice['trend']} - {advice['trend_desc']}")
