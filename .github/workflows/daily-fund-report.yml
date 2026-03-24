@@ -34,3 +34,13 @@ jobs:
 
     - name: 等待5秒（确保消息发送）
       run: sleep 5
+
+    - name: 运行基金实时分析报告（增强版）
+      env:
+        SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+        TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      run: |
+        python fund_advisor_real.py
+
+    - name: 等待5秒（确保消息发送）
+      run: sleep 5
